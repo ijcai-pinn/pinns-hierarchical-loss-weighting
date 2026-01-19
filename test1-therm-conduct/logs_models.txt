@@ -1,0 +1,2 @@
+pinn_model_weights_500.pth - kappa5 training - good
+pinn_model_weights_200.pth - kappa5 training - the best (t = 5, t = 4 not good)

@@ -1,0 +1,538 @@
+pinn-fullbatch-best-1k-sigmoid.pth
+model = ModifiedPINN(
+   input_dim=7,
+   hidden_dim=64,
+   num_layers=4,
+   output_dim=7
+).to(DEVICE)
+class ModifiedPINN(nn.Module):
+    """
+    Modified MLP architecture based on Wang et al. with U-Net style connections.
+    Particularly effective for capturing sharp gradients in pressure/saturation.
+    
+    Key improvements:
+    - Modified MLP with U and V paths (proven effective for PINNs)
+    - Skip connections for gradient flow
+    - Separate branches for different physics (pressure vs saturation)
+    - Adaptive activation functions
+    """
+    
+    def __init__(self, input_dim=7, hidden_dim=128, num_layers=6, output_dim=7):
+        super(ModifiedPINN, self).__init__()
+        
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # Modified MLP: Two parallel input branches (U and V paths)
+        self.U = nn.Linear(input_dim, hidden_dim)
+        self.V = nn.Linear(input_dim, hidden_dim)
+        
+        # Hidden layers with residual connections
+        self.hidden_layers = nn.ModuleList()
+        for i in range(num_layers - 1):
+            self.hidden_layers.append(nn.Linear(hidden_dim, hidden_dim))
+        
+        # Output layer
+        self.output_layer = nn.Linear(hidden_dim, output_dim)
+        
+        # Learnable scaling parameters for outputs
+        self.pressure_scale = nn.Parameter(torch.ones(1))
+        self.saturation_scale = nn.Parameter(torch.ones(2))
+        self.velocity_scale = nn.Parameter(torch.ones(4))
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Xavier initialization for better gradient flow."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight, gain=1.0)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+    
+    def forward(self, x):
+        """
+        Forward pass with modified MLP architecture.
+        
+        Args:
+            x: Input [batch, 7] -> (t, x, y, pwat, poil, kwat, koil)
+        
+        Returns:
+            out: [batch, 7] -> (pres, soil, swat, uoil_x, uoil_y, uwat_x, uwat_y)
+        """
+        # Modified MLP: Two parallel branches
+        U = torch.tanh(self.U(x))
+        V = torch.tanh(self.V(x))
+        
+        # Element-wise multiplication (key feature of modified MLP)
+        h = U * V
+        
+        # Pass through hidden layers with residual connections
+        for i, layer in enumerate(self.hidden_layers):
+            h_new = torch.tanh(layer(h))
+            # Residual connection every 2 layers
+            if i % 2 == 1 and i > 0:
+                h = h + h_new  # Skip connection
+            else:
+                h = h_new
+        
+        # Output layer
+        out = self.output_layer(h)
+        
+        # Split outputs
+        pressure = out[:, 0:1]
+        saturation_oil = out[:, 1:2]
+        saturation_wat = out[:, 2:3]
+        velocities = out[:, 3:7]
+        
+        # Apply constraints with learnable scales
+        # Pressure: softplus for positivity
+        pressure = torch.sigmoid(pressure * self.pressure_scale)#F.softplus(pressure * self.pressure_scale, beta=1, threshold=20)
+        
+        # Saturations: sigmoid to enforce [0, 1] bounds
+        saturation_oil = torch.sigmoid(saturation_oil * self.saturation_scale[0])
+        saturation_wat = torch.sigmoid(saturation_wat * self.saturation_scale[1])
+        
+        # Enforce saturation constraint: S_o + S_w = 1
+        # Normalize to ensure sum equals 1
+        sat_sum = saturation_oil + saturation_wat + 1e-8
+        saturation_oil = saturation_oil / sat_sum
+        saturation_wat = saturation_wat / sat_sum
+        
+        # Velocities: can be positive or negative, use tanh scaled
+        velocities = torch.tanh(velocities) * self.velocity_scale
+        
+        return torch.cat([pressure, saturation_oil, saturation_wat, velocities], dim=1)
+---------------------------------------------------------------------------------------
+pinn-fullbatch-best-1k-sigmoid-2.pth
+model = ModifiedPINN(
+   input_dim=7,
+   hidden_dim=128,
+   num_layers=4,
+   output_dim=7
+).to(DEVICE)
+class ModifiedPINN(nn.Module):
+    """
+    Modified MLP architecture based on Wang et al. with U-Net style connections.
+    Particularly effective for capturing sharp gradients in pressure/saturation.
+    
+    Key improvements:
+    - Modified MLP with U and V paths (proven effective for PINNs)
+    - Skip connections for gradient flow
+    - Separate branches for different physics (pressure vs saturation)
+    - Adaptive activation functions
+    """
+    
+    def __init__(self, input_dim=7, hidden_dim=128, num_layers=6, output_dim=7):
+        super(ModifiedPINN, self).__init__()
+        
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # Modified MLP: Two parallel input branches (U and V paths)
+        self.U = nn.Linear(input_dim, hidden_dim)
+        self.V = nn.Linear(input_dim, hidden_dim)
+        
+        # Hidden layers with residual connections
+        self.hidden_layers = nn.ModuleList()
+        for i in range(num_layers - 1):
+            self.hidden_layers.append(nn.Linear(hidden_dim, hidden_dim))
+        
+        # Output layer
+        self.output_layer = nn.Linear(hidden_dim, output_dim)
+        
+        # Learnable scaling parameters for outputs
+        self.pressure_scale = nn.Parameter(torch.ones(1))
+        self.saturation_scale = nn.Parameter(torch.ones(2))
+        self.velocity_scale = nn.Parameter(torch.ones(4))
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Xavier initialization for better gradient flow."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight, gain=1.0)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+    
+    def forward(self, x):
+        """
+        Forward pass with modified MLP architecture.
+        
+        Args:
+            x: Input [batch, 7] -> (t, x, y, pwat, poil, kwat, koil)
+        
+        Returns:
+            out: [batch, 7] -> (pres, soil, swat, uoil_x, uoil_y, uwat_x, uwat_y)
+        """
+        # Modified MLP: Two parallel branches
+        U = torch.tanh(self.U(x))
+        V = torch.tanh(self.V(x))
+        
+        # Element-wise multiplication (key feature of modified MLP)
+        h = U * V
+        
+        # Pass through hidden layers with residual connections
+        for i, layer in enumerate(self.hidden_layers):
+            h_new = torch.tanh(layer(h))
+            # Residual connection every 2 layers
+            if i % 2 == 1 and i > 0:
+                h = h + h_new  # Skip connection
+            else:
+                h = h_new
+        
+        # Output layer
+        out = self.output_layer(h)
+        
+        # Split outputs
+        pressure = out[:, 0:1]
+        saturation_oil = out[:, 1:2]
+        saturation_wat = out[:, 2:3]
+        velocities = out[:, 3:7]
+        
+        # Apply constraints with learnable scales
+        # Pressure: softplus for positivity
+        pressure = torch.sigmoid(pressure * self.pressure_scale)#F.softplus(pressure * self.pressure_scale, beta=1, threshold=20)
+        
+        # Saturations: sigmoid to enforce [0, 1] bounds
+        saturation_oil = torch.sigmoid(saturation_oil * self.saturation_scale[0])
+        saturation_wat = torch.sigmoid(saturation_wat * self.saturation_scale[1])
+        
+        # Enforce saturation constraint: S_o + S_w = 1
+        # Normalize to ensure sum equals 1
+        sat_sum = saturation_oil + saturation_wat + 1e-8
+        saturation_oil = saturation_oil / sat_sum
+        saturation_wat = saturation_wat / sat_sum
+        
+        # Velocities: can be positive or negative, use tanh scaled
+        velocities = torch.tanh(velocities) * self.velocity_scale
+        
+        return torch.cat([pressure, saturation_oil, saturation_wat, velocities], dim=1)
+
+-------------------------------------------------------------------------------------------
+pinn-fullbatch-best-1k-sigmoid-4.pth
+model = ModifiedPINN(
+   input_dim=7,
+   hidden_dim=128,
+   num_layers=5,
+   output_dim=7
+).to(DEVICE)
+
+class ModifiedPINN(nn.Module):
+    """
+    Modified MLP architecture based on Wang et al. with U-Net style connections.
+    Particularly effective for capturing sharp gradients in pressure/saturation.
+    
+    Key improvements:
+    - Modified MLP with U and V paths (proven effective for PINNs)
+    - Skip connections for gradient flow
+    - Separate branches for different physics (pressure vs saturation)
+    - Adaptive activation functions
+    """
+    
+    def __init__(self, input_dim=7, hidden_dim=128, num_layers=6, output_dim=7):
+        super(ModifiedPINN, self).__init__()
+        
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # Modified MLP: Two parallel input branches (U and V paths)
+        self.U = nn.Linear(input_dim, hidden_dim)
+        self.V = nn.Linear(input_dim, hidden_dim)
+        
+        # Hidden layers with residual connections
+        self.hidden_layers = nn.ModuleList()
+        for i in range(num_layers - 1):
+            self.hidden_layers.append(nn.Linear(hidden_dim, hidden_dim))
+        
+        # Output layer
+        self.output_layer = nn.Linear(hidden_dim, output_dim)
+        
+        # Learnable scaling parameters for outputs
+        self.pressure_scale = nn.Parameter(torch.ones(1))
+        self.saturation_scale = nn.Parameter(torch.ones(2))
+        self.velocity_scale = nn.Parameter(torch.ones(4))
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Xavier initialization for better gradient flow."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight, gain=1.0)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+    
+    def forward(self, x):
+        """
+        Forward pass with modified MLP architecture.
+        
+        Args:
+            x: Input [batch, 7] -> (t, x, y, pwat, poil, kwat, koil)
+        
+        Returns:
+            out: [batch, 7] -> (pres, soil, swat, uoil_x, uoil_y, uwat_x, uwat_y)
+        """
+        # Modified MLP: Two parallel branches
+        U = torch.tanh(self.U(x))
+        V = torch.tanh(self.V(x))
+        
+        # Element-wise multiplication (key feature of modified MLP)
+        h = U * V
+        
+        # Pass through hidden layers with residual connections
+        for i, layer in enumerate(self.hidden_layers):
+            h_new = torch.tanh(layer(h))
+            # Residual connection every 2 layers
+            if i % 2 == 1 and i > 0:
+                h = h + h_new  # Skip connection
+            else:
+                h = h_new
+        
+        # Output layer
+        out = self.output_layer(h)
+        
+        # Split outputs
+        pressure = out[:, 0:1]
+        saturation_oil = out[:, 1:2]
+        saturation_wat = out[:, 2:3]
+        velocities = out[:, 3:7]
+        
+        # Apply constraints with learnable scales
+        # Pressure: softplus for positivity
+        pressure = torch.sigmoid(pressure * self.pressure_scale)#F.softplus(pressure * self.pressure_scale, beta=1, threshold=20)
+        
+        # Saturations: sigmoid to enforce [0, 1] bounds
+        saturation_oil = torch.sigmoid(saturation_oil * self.saturation_scale[0])
+        saturation_wat = torch.sigmoid(saturation_wat * self.saturation_scale[1])
+        
+        # Enforce saturation constraint: S_o + S_w = 1
+        # Normalize to ensure sum equals 1
+        sat_sum = saturation_oil + saturation_wat + 1e-8
+        saturation_oil = saturation_oil / sat_sum
+        saturation_wat = saturation_wat / sat_sum
+        
+        # Velocities: can be positive or negative, use tanh scaled
+        velocities = torch.tanh(velocities) * self.velocity_scale
+        
+        return torch.cat([pressure, saturation_oil, saturation_wat, velocities], dim=1)
+---------------------------------------------------------------------------------------
+pinn-fullbatch-best-2k-sigmoid-2.pth
+model = ModifiedPINN(
+   input_dim=7,
+   hidden_dim=64,
+   num_layers=5,
+   output_dim=7
+).to(DEVICE)
+class ModifiedPINN(nn.Module):
+    """
+    Modified MLP architecture based on Wang et al. with U-Net style connections.
+    Particularly effective for capturing sharp gradients in pressure/saturation.
+    
+    Key improvements:
+    - Modified MLP with U and V paths (proven effective for PINNs)
+    - Skip connections for gradient flow
+    - Separate branches for different physics (pressure vs saturation)
+    - Adaptive activation functions
+    """
+    
+    def __init__(self, input_dim=7, hidden_dim=128, num_layers=6, output_dim=7):
+        super(ModifiedPINN, self).__init__()
+        
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # Modified MLP: Two parallel input branches (U and V paths)
+        self.U = nn.Linear(input_dim, hidden_dim)
+        self.V = nn.Linear(input_dim, hidden_dim)
+        
+        # Hidden layers with residual connections
+        self.hidden_layers = nn.ModuleList()
+        for i in range(num_layers - 1):
+            self.hidden_layers.append(nn.Linear(hidden_dim, hidden_dim))
+        
+        # Output layer
+        self.output_layer = nn.Linear(hidden_dim, output_dim)
+        
+        # Learnable scaling parameters for outputs
+        self.pressure_scale = nn.Parameter(torch.ones(1))
+        self.saturation_scale = nn.Parameter(torch.ones(2))
+        self.velocity_scale = nn.Parameter(torch.ones(4))
+        
+    #     self._initialize_weights()
+    
+    # def _initialize_weights(self):
+    #     """Xavier initialization for better gradient flow."""
+    #     for m in self.modules():
+    #         if isinstance(m, nn.Linear):
+    #             nn.init.xavier_normal_(m.weight, gain=1.0)
+    #             if m.bias is not None:
+    #                 nn.init.zeros_(m.bias)
+    
+    def forward(self, x):
+        """
+        Forward pass with modified MLP architecture.
+        
+        Args:
+            x: Input [batch, 7] -> (t, x, y, pwat, poil, kwat, koil)
+        
+        Returns:
+            out: [batch, 7] -> (pres, soil, swat, uoil_x, uoil_y, uwat_x, uwat_y)
+        """
+        # Modified MLP: Two parallel branches
+        U = torch.tanh(self.U(x))
+        V = torch.tanh(self.V(x))
+        
+        # Element-wise multiplication (key feature of modified MLP)
+        h = U * V
+        
+        # Pass through hidden layers with residual connections
+        for i, layer in enumerate(self.hidden_layers):
+            h_new = torch.tanh(layer(h))
+            # Residual connection every 2 layers
+            if i % 2 == 1 and i > 0:
+                h = h + h_new  # Skip connection
+            else:
+                h = h_new
+        
+        # Output layer
+        out = self.output_layer(h)
+        
+        # Split outputs
+        pressure = out[:, 0:1]
+        saturation_oil = out[:, 1:2]
+        saturation_wat = out[:, 2:3]
+        velocities = out[:, 3:7]
+        
+        # Apply constraints with learnable scales
+        # Pressure: softplus for positivity
+        pressure = torch.sigmoid(pressure * self.pressure_scale)#F.softplus(pressure * self.pressure_scale, beta=1, threshold=20)
+        
+        # Saturations: sigmoid to enforce [0, 1] bounds
+        saturation_oil = torch.sigmoid(saturation_oil * self.saturation_scale[0])
+        saturation_wat = torch.sigmoid(saturation_wat * self.saturation_scale[1])
+        
+        # Enforce saturation constraint: S_o + S_w = 1
+        # Normalize to ensure sum equals 1
+        sat_sum = saturation_oil + saturation_wat + 1e-8
+        saturation_oil = saturation_oil / sat_sum
+        saturation_wat = saturation_wat / sat_sum
+        
+        # Velocities: can be positive or negative, use tanh scaled
+        velocities = torch.tanh(velocities) * self.velocity_scale
+        
+        return torch.cat([pressure, saturation_oil, saturation_wat, velocities], dim=1)
+----------------------------------------------------------------------------------------
+pinn-fullbatch-best-150-sigmoid-last.pth
+pinn-fullbatch-best-150-sigmoid.pth
+
+model = ModifiedPINN(
+   input_dim=7,
+   hidden_dim=128,
+   num_layers=4,
+   output_dim=7
+).to(DEVICE)
+class ModifiedPINN(nn.Module):
+    """
+    Modified MLP architecture based on Wang et al. with U-Net style connections.
+    Particularly effective for capturing sharp gradients in pressure/saturation.
+    
+    Key improvements:
+    - Modified MLP with U and V paths (proven effective for PINNs)
+    - Skip connections for gradient flow
+    - Separate branches for different physics (pressure vs saturation)
+    - Adaptive activation functions
+    """
+    
+    def __init__(self, input_dim=7, hidden_dim=128, num_layers=6, output_dim=7):
+        super(ModifiedPINN, self).__init__()
+        
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # Modified MLP: Two parallel input branches (U and V paths)
+        self.U = nn.Linear(input_dim, hidden_dim)
+        self.V = nn.Linear(input_dim, hidden_dim)
+        
+        # Hidden layers with residual connections
+        self.hidden_layers = nn.ModuleList()
+        for i in range(num_layers - 1):
+            self.hidden_layers.append(nn.Linear(hidden_dim, hidden_dim))
+        
+        # Output layer
+        self.output_layer = nn.Linear(hidden_dim, output_dim)
+        
+        # Learnable scaling parameters for outputs
+        self.pressure_scale = nn.Parameter(torch.ones(1))
+        self.saturation_scale = nn.Parameter(torch.ones(2))
+        self.velocity_scale = nn.Parameter(torch.ones(4))
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Xavier initialization for better gradient flow."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight, gain=1.0)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+    
+    def forward(self, x):
+        """
+        Forward pass with modified MLP architecture.
+        
+        Args:
+            x: Input [batch, 7] -> (t, x, y, pwat, poil, kwat, koil)
+        
+        Returns:
+            out: [batch, 7] -> (pres, soil, swat, uoil_x, uoil_y, uwat_x, uwat_y)
+        """
+        # Modified MLP: Two parallel branches
+        U = torch.tanh(self.U(x))
+        V = torch.tanh(self.V(x))
+        
+        # Element-wise multiplication (key feature of modified MLP)
+        h = U * V
+        
+        # Pass through hidden layers with residual connections
+        for i, layer in enumerate(self.hidden_layers):
+            h_new = torch.tanh(layer(h))
+            # Residual connection every 2 layers
+            if i % 2 == 1 and i > 0:
+                h = h + h_new  # Skip connection
+            else:
+                h = h_new
+        
+        # Output layer
+        out = self.output_layer(h)
+        
+        # Split outputs
+        pressure = out[:, 0:1]
+        saturation_oil = out[:, 1:2]
+        saturation_wat = out[:, 2:3]
+        velocities = out[:, 3:7]
+        
+        # Apply constraints with learnable scales
+        # Pressure: softplus for positivity
+        pressure = torch.sigmoid(pressure * self.pressure_scale)#F.softplus(pressure * self.pressure_scale, beta=1, threshold=20)
+        
+        # Saturations: sigmoid to enforce [0, 1] bounds
+        saturation_oil = torch.sigmoid(saturation_oil * self.saturation_scale[0])
+        saturation_wat = torch.sigmoid(saturation_wat * self.saturation_scale[1])
+        
+        # Enforce saturation constraint: S_o + S_w = 1
+        # Normalize to ensure sum equals 1
+        sat_sum = saturation_oil + saturation_wat + 1e-8
+        saturation_oil = saturation_oil / sat_sum
+        saturation_wat = saturation_wat / sat_sum
+        
+        # Velocities: can be positive or negative, use tanh scaled
+        velocities = torch.tanh(velocities) * self.velocity_scale
+        
+        return torch.cat([pressure, saturation_oil, saturation_wat, velocities], dim=1)
